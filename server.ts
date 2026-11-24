@@ -92,10 +92,32 @@ const localDataRoot =
     : process.platform === 'darwin'
       ? path.join(os.homedir(), 'Library', 'Application Support')
       : process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share');
+const legacyHistoryRoot = path.join(
+  localDataRoot,
+  'ASR语音转写质检与校准工作台',
+  '作业历史'
+);
 const historyRoot = path.resolve(
   process.env.ASR_HISTORY_DIR ||
-    path.join(localDataRoot, 'ASR语音转写质检与校准工作台', '作业历史')
+    path.join(localDataRoot, 'ASR-Workbench', 'Job-History')
 );
+
+async function ensureHistoryRoot(): Promise<void> {
+  if (!process.env.ASR_HISTORY_DIR && historyRoot !== legacyHistoryRoot) {
+    try {
+      await fs.promises.access(historyRoot);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      try {
+        await fs.promises.access(legacyHistoryRoot);
+        await fs.promises.cp(legacyHistoryRoot, historyRoot, { recursive: true, errorOnExist: true });
+      } catch (copyError) {
+        if ((copyError as NodeJS.ErrnoException).code !== 'ENOENT') throw copyError;
+      }
+    }
+  }
+  await fs.promises.mkdir(historyRoot, { recursive: true });
+}
 
 function isLocalRequest(req: express.Request): boolean {
   const address = req.socket.remoteAddress?.replace(/^::ffff:/, '');
@@ -340,7 +362,7 @@ export async function startServer(port = PORT): Promise<Server> {
 
   app.get('/api/history', requireLocalRequest, async (_req, res, next) => {
     try {
-      await fs.promises.mkdir(historyRoot, { recursive: true });
+      await ensureHistoryRoot();
       const entries = await fs.promises.readdir(historyRoot, { withFileTypes: true });
       const records: LocalHistoryRecord[] = [];
       for (const entry of entries) {
@@ -391,6 +413,7 @@ export async function startServer(port = PORT): Promise<Server> {
       const extension = path.extname(uploadSession.fileName).toLowerCase();
       const audioFileName = `audio${/^\.[a-z0-9]{1,10}$/i.test(extension) ? extension : '.bin'}`;
       const audioPath = path.join(recordDirectory, audioFileName);
+      await ensureHistoryRoot();
       await fs.promises.mkdir(recordDirectory, { recursive: true });
       createdDirectory = recordDirectory;
 

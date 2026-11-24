@@ -1,46 +1,81 @@
-<<<<<<< HEAD
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+# ASR Transcription QA Workbench
 
-# Run and deploy your AI Studio app
+语音转写质检与校准工作台。支持导入音频和参考转写 JSON、使用 Gemini 执行转写校准、人声段识别、批量查看及导出结果。
 
-This contains everything you need to run your app locally.
+## 环境要求
 
-View your app in AI Studio: https://ai.studio/apps/242b4ff0-61d8-45cb-99cd-e1a841b66b55
+- Node.js 20.19+ 或 22.12+
+- npm
+- Gemini API key（运行 AI 校准和人声识别时需要）
 
-## Run Locally
+## 本地开发
 
-**Prerequisites:**  Node.js
+1. 安装依赖：
 
+   ```bash
+   npm ci
+   ```
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+2. 复制 `.env.example` 为 `.env`，填入 Gemini API key：
 
-## Desktop builds
+   ```dotenv
+   GEMINI_API_KEY=your_api_key
+   ```
 
-The desktop app keeps the existing Express API and React workbench, starts the API on
-the local computer, and opens it in an Electron window. A Gemini API key is required;
-when configured in the app, it is encrypted using the operating system's secure storage.
+3. 启动开发服务：
 
-- Windows installer (`.exe`): run `npm run desktop:win` on Windows.
-- macOS disk image (`.dmg`): run `npm run desktop:mac` on macOS.
+   ```bash
+   npm run dev
+   ```
 
-Builds are written to `release/`. The macOS package must be built on a Mac; code signing
-and notarization are separate release steps.
+   默认在 `http://localhost:3000` 打开工作台。
 
-Work history and original audio are stored locally and kept until manually removed:
+## 桌面版打包
 
-- Windows: `%LOCALAPPDATA%\ASR语音转写质检与校准工作台\作业历史`
-- macOS: `~/Library/Application Support/ASR语音转写质检与校准工作台/作业历史`
+桌面版使用 Electron 打开工作台，并在本机启动 API 服务。
 
-The batch summary page displays the active storage path. Removing an item from the
-workbench only removes it from the current queue; delete its folder under `作业历史`
-to permanently remove the saved record and audio.
-=======
-# asr
-a app about asr
->>>>>>> c542404e0e014d2e36c8e94380c01d0b6f933252
+### Windows
+
+在 Windows 上运行：
+
+```bash
+npm ci
+npm run desktop:win
+```
+
+### macOS
+
+在 Mac 上运行（不能在 Windows 上生成 macOS `.dmg`）：
+
+```bash
+npm ci
+npm run desktop:mac
+```
+
+安装包输出到 `release/`。打包默认使用当前电脑的 Mac 架构。未签名和公证的 macOS 安装包可能会显示开发者验证提示；公开分发前应使用 Apple Developer ID 签名并完成公证。
+
+桌面版首次启动时会提示输入 Gemini API key，并使用操作系统安全存储加密保存。不要把真实 API key 提交到代码仓库。
+
+## 本地作业与音频存储
+
+桌面版会保存作业记录和原始音频；默认一直保留，直到用户手动删除。保存目录使用英文名称：
+
+- Windows：`%LOCALAPPDATA%\ASR-Workbench\Job-History`
+- macOS：`~/Library/Application Support/ASR-Workbench/Job-History`
+- Linux：`$XDG_DATA_HOME/ASR-Workbench/Job-History`；未设置 `XDG_DATA_HOME` 时为 `~/.local/share/ASR-Workbench/Job-History`
+
+“批量汇总”页面会显示当前使用的完整目录。删除作业目录中的单个记录文件夹可删除对应作业和音频；删除整个 `Job-History` 文件夹可清空全部历史。将作业从当前队列移除不会删除磁盘上的记录。
+
+旧版中文目录中的历史记录会在新版首次读取历史时复制到新目录，旧目录会保留；确认新目录中的记录完整后，可手动删除旧目录。
+
+如需指定其他保存位置，可在启动服务前设置 `ASR_HISTORY_DIR` 环境变量。
+
+## 常用命令
+
+| 命令 | 说明 |
+| --- | --- |
+| `npm run dev` | 启动本地开发服务 |
+| `npm run lint` | 运行 TypeScript 类型检查 |
+| `npm run build` | 构建 Web 前端 |
+| `npm run desktop:win` | 构建 Windows `.exe` 安装程序 |
+| `npm run desktop:mac` | 在 macOS 上构建 `.dmg` 安装程序 |
