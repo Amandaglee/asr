@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 <div align="center">
 <img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
 </div>
@@ -39,3 +40,7 @@ Work history and original audio are stored locally and kept until manually remov
 The batch summary page displays the active storage path. Removing an item from the
 workbench only removes it from the current queue; delete its folder under `作业历史`
 to permanently remove the saved record and audio.
+=======
+# asr
+a app about asr
+>>>>>>> c542404e0e014d2e36c8e94380c01d0b6f933252
