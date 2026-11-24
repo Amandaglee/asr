@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>配置 Gemini API 密钥</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 32px;
+        color: #172033;
+        background: #f5f7fb;
+        font: 14px/1.6 "Segoe UI", "Microsoft YaHei", sans-serif;
+      }
+      h1 {
+        margin: 0 0 8px;
+        font-size: 20px;
+      }
+      p {
+        margin: 0 0 18px;
+        color: #536078;
+      }
+      input,
+      button {
+        box-sizing: border-box;
+        width: 100%;
+        border-radius: 8px;
+        font: inherit;
+      }
+      input {
+        padding: 11px 12px;
+        border: 1px solid #cbd3e1;
+        background: white;
+      }
+      button {
+        margin-top: 14px;
+        padding: 10px 12px;
+        border: 0;
+        color: white;
+        background: #315efb;
+        cursor: pointer;
+      }
+      button:disabled {
+        opacity: 0.65;
+        cursor: wait;
+      }
+      #error {
+        min-height: 22px;
+        margin-top: 10px;
+        color: #b42318;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>首次使用配置</h1>
+    <p>请输入 Gemini API 密钥。密钥会加密保存在这台电脑上，不会写入安装包。</p>
+    <form id="form">
+      <input id="api-key" type="password" autocomplete="off" placeholder="Gemini API 密钥" required />
+      <button id="submit" type="submit">安全保存并启动</button>
+      <div id="error" role="alert"></div>
+    </form>
+    <script>
+      const form = document.getElementById('form');
+      const input = document.getElementById('api-key');
+      const submit = document.getElementById('submit');
+      const error = document.getElementById('error');
+
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        submit.disabled = true;
+        error.textContent = '';
+        try {
+          await window.desktopSettings.saveApiKey(input.value);
+        } catch (saveError) {
+          error.textContent = saveError instanceof Error ? saveError.message : String(saveError);
+          submit.disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>
