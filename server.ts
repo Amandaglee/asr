@@ -9,7 +9,6 @@ import os from 'os';
 import path from 'path';
 import multer from 'multer';
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
-import { createServer as createViteServer } from 'vite';
 
 const PORT = Number(process.env.PORT) || 3000;
 const isProd = process.env.NODE_ENV === 'production';
@@ -1438,6 +1437,7 @@ User: 嗯，行，那我们先定在这边好了。`;
   });
 
   if (!isProd) {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',

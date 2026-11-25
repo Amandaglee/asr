@@ -62,7 +62,7 @@ export const WaveformPlayer: React.FC<WaveformPlayerProps> = ({
   audioRef,
 }) => {
   const [actualDuration, setActualDuration] = useState<number>(durationSec);
-  const [decodeState, setDecodeState] = useState<'idle' | 'loading' | 'ready' | 'skipped' | 'error'>('idle');
+  const [decodeState, setDecodeState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [zoom, setZoom] = useState<number>(1);
   const [viewStart, setViewStart] = useState<number>(0);
   const [gainMode, setGainMode] = useState<GainMode>('auto');
@@ -106,9 +106,9 @@ export const WaveformPlayer: React.FC<WaveformPlayerProps> = ({
     setViewStart((prev) => Math.max(0, Math.min(maxViewStart, prev)));
   }, [maxViewStart]);
 
-  // Decode full PCM channel data for sharp zooming & auto-gain (skip > 35MB to protect RAM)
+  // Long or large files use lower-rate PCM for waveform rendering to reduce memory usage.
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
     channelDataRef.current = null;
 
     if (!audioUrl) {
@@ -116,24 +116,22 @@ export const WaveformPlayer: React.FC<WaveformPlayerProps> = ({
       return;
     }
 
-    if (audioSize > 35 * 1024 * 1024) {
-      setDecodeState('skipped');
-      return;
-    }
-
     setDecodeState('loading');
 
     async function decodeFullAudio() {
       try {
-        const res = await fetch(audioUrl);
+        const res = await fetch(audioUrl, { signal: controller.signal });
+        if (!res.ok) throw new Error(`Audio request failed: ${res.status}`);
         const arrayBuf = await res.arrayBuffer();
+        if (controller.signal.aborted) return;
         const AudioCtx =
           window.AudioContext ||
           (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-        const ctx = new AudioCtx();
+        const useLowerSampleRate = audioSize > 35 * 1024 * 1024 || durationSec > 300;
+        const ctx = useLowerSampleRate ? new AudioCtx({ sampleRate: 8000 }) : new AudioCtx();
         try {
           const decoded = await ctx.decodeAudioData(arrayBuf);
-          if (cancelled) return;
+          if (controller.signal.aborted) return;
 
           const dur = decoded.duration || durationSec;
           setActualDuration(dur);
@@ -179,7 +177,7 @@ export const WaveformPlayer: React.FC<WaveformPlayerProps> = ({
           ctx.close().catch(() => {});
         }
       } catch {
-        if (!cancelled) {
+        if (!controller.signal.aborted) {
           setDecodeState('error');
         }
       }
@@ -187,7 +185,7 @@ export const WaveformPlayer: React.FC<WaveformPlayerProps> = ({
 
     decodeFullAudio();
     return () => {
-      cancelled = true;
+      controller.abort();
     };
   }, [audioUrl, audioSize, durationSec]);
 
@@ -302,15 +300,6 @@ export const WaveformPlayer: React.FC<WaveformPlayerProps> = ({
 
         ctx.fillStyle = x <= progressX ? '#2563eb' : '#94a3b8';
         ctx.fillRect(x, midY - topH, 1.5, topH + botH);
-      }
-    } else {
-      // Fallback bars for >35MB skipped files or while loading
-      const count = Math.floor(width / 4);
-      for (let i = 0; i < count; i++) {
-        const x = i * 4;
-        const h = decodeState === 'loading' ? 12 : 10 + ((i * 7) % 5) * 3;
-        ctx.fillStyle = x <= progressX ? '#2563eb' : '#cbd5e1';
-        ctx.fillRect(x, midY - h / 2, 2, h);
       }
     }
 
@@ -856,9 +845,9 @@ export const WaveformPlayer: React.FC<WaveformPlayerProps> = ({
             <RotateCcw className="w-3.5 h-3.5" />
           </button>
 
-          {decodeState === 'skipped' && (
-            <span className="text-[11px] text-slate-400">
-              超大音频仅显示分段框，支持缩放与精确拖动定位
+          {(decodeState === 'loading' || decodeState === 'error') && (
+            <span role="status" className="text-[11px] text-slate-500">
+              {decodeState === 'loading' ? '正在读取音频波形…' : '无法读取音频波形'}
             </span>
           )}
         </div>

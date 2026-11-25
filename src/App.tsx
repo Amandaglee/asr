@@ -210,6 +210,7 @@ export default function App() {
   } | null>(null);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const quickEditRef = useRef<HTMLTextAreaElement | null>(null);
   const skipInitialHistorySync = useRef(true);
   const historySnapshots = useRef(new Map<string, string>());
 
@@ -320,18 +321,21 @@ export default function App() {
     () => sessions.find((s) => s.id === selectedId) ?? sessions[0] ?? null,
     [sessions, selectedId]
   );
+  const activeTranscripts =
+    activeSession?.calibratedResult?.corrected_json.transcripts ??
+    activeSession?.referenceJson.transcripts;
+  const selectedUtterance = activeTranscripts?.find((u) => u.utterance_id === activeUtteranceId);
 
   // Sync activeUtteranceId when audio plays
   useEffect(() => {
-    if (!activeSession) return;
-    const list =
-      activeSession.calibratedResult?.corrected_json.transcripts ??
-      activeSession.referenceJson.transcripts;
-    const hit = list.find((u) => currentTime >= u.start && currentTime <= u.end);
-    if (hit && hit.utterance_id !== activeUtteranceId && isPlaying) {
+    if (!isPlaying || document.activeElement === quickEditRef.current) return;
+    // Keep the selected block at shared boundaries and within overlapping segments.
+    if (selectedUtterance && currentTime >= selectedUtterance.start && currentTime <= selectedUtterance.end) return;
+    const hit = activeTranscripts?.find((u) => currentTime >= u.start && currentTime < u.end);
+    if (hit) {
       setActiveUtteranceId(hit.utterance_id);
     }
-  }, [currentTime, activeSession, isPlaying, activeUtteranceId]);
+  }, [currentTime, activeTranscripts, isPlaying, selectedUtterance]);
 
   // Global Space shortcut for audio play/pause when not typing in inputs
   useEffect(() => {
@@ -1247,7 +1251,7 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen flex flex-col bg-slate-50 text-slate-900">
+    <div className={`min-h-screen flex flex-col bg-slate-50 text-slate-900 ${activeTab === 'workbench' ? 'lg:h-dvh lg:overflow-hidden' : ''}`}>
       {/* Top Bar Contract: 3 zones, single row, gap-8 */}
       <header className="h-14 px-6 bg-white border-b border-slate-200 flex items-center justify-between gap-8 shrink-0 sticky top-0 z-30">
         {/* Zone 1: Single text element wordmark */}
@@ -1399,8 +1403,8 @@ export default function App() {
       {activeTab === 'workbench' && (
         <div className="flex-1 flex flex-col lg:flex-row min-h-0">
           {/* Left Batch Queue Sidebar (272px) */}
-          <aside className="w-full lg:w-[272px] shrink-0 bg-white border-b lg:border-b-0 lg:border-r border-slate-200 flex flex-col">
-            <div className="p-4 border-b border-slate-200 space-y-2.5">
+          <aside className="w-full lg:w-[272px] min-h-0 shrink-0 bg-white border-b lg:border-b-0 lg:border-r border-slate-200 flex flex-col">
+            <div className="shrink-0 p-4 border-b border-slate-200 space-y-2.5">
               <div className="flex items-center justify-between">
                 <h2 className="text-xs font-semibold text-slate-700">
                   质检任务队列 ({sessions.length})
@@ -1434,7 +1438,16 @@ export default function App() {
               )}
             </div>
 
-            <div className="flex-1 overflow-y-auto divide-y divide-slate-100">
+            <div className="shrink-0 border-b border-slate-200 px-4 py-2 text-[11px] text-slate-600">
+              <div className="font-medium text-slate-700">文件保存地址</div>
+              {historyStoragePath ? (
+                <code className="block select-all break-all">{historyStoragePath}</code>
+              ) : (
+                <span>{historyError ? '无法读取保存地址' : '正在读取保存地址…'}</span>
+              )}
+            </div>
+
+            <div role="region" aria-label="质检任务列表" tabIndex={0} className="min-h-0 max-h-[40dvh] lg:max-h-none flex-1 overflow-y-auto overscroll-y-contain divide-y divide-slate-100">
               {sessions.length === 0 ? (
                 <div className="p-5 text-xs text-slate-500 leading-relaxed">
                   暂无音频样本。点击上方「导入样本」上传音频与参考 JSON，或生成一条带真实人声对话的示例样本。
@@ -1531,7 +1544,7 @@ export default function App() {
           </aside>
 
           {/* Center Calibration Workspace */}
-          <main className="flex-1 min-w-0 p-5 overflow-y-auto space-y-5">
+          <main className="flex-1 min-h-0 min-w-0 p-5 lg:overflow-y-auto lg:overscroll-y-contain space-y-5">
             {!activeSession ? (
               <div className="max-w-2xl mx-auto mt-12 bg-white border border-slate-200 rounded-xl p-8 text-center space-y-5">
                 <div className="w-11 h-11 mx-auto rounded-lg bg-slate-100 flex items-center justify-center text-blue-700">
@@ -1695,6 +1708,25 @@ export default function App() {
                 <div className="grid grid-cols-1 xl:grid-cols-12 gap-5 items-start">
                   {/* Utterance Table (8 cols on xl) */}
                   <div className="xl:col-span-8 bg-white border border-slate-200 rounded-lg overflow-hidden">
+                    <div className="px-4 py-3 border-b border-slate-200 space-y-2">
+                      <label htmlFor="qa-quick-edit" className="block text-sm font-medium text-slate-900">
+                        {selectedUtterance ? `编辑语句 #${selectedUtterance.utterance_id}` : '编辑选中语句'}
+                      </label>
+                      <textarea
+                        id="qa-quick-edit"
+                        ref={quickEditRef}
+                        rows={3}
+                        disabled={!selectedUtterance}
+                        placeholder={selectedUtterance ? '输入语句文本' : '点击波形上的语句块或下方表格中的语句'}
+                        value={selectedUtterance?.text ?? ''}
+                        onChange={(event) => {
+                          if (selectedUtterance) {
+                            handleUpdateUtterance({ ...selectedUtterance, text: event.currentTarget.value });
+                          }
+                        }}
+                        className="block w-full resize-y rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-900 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-slate-50"
+                      />
+                    </div>
                     <div className="px-4 py-3 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2.5">
                       <div className="flex flex-wrap items-center gap-2.5">
                         <div className="flex items-center gap-1 p-0.5 bg-slate-100 rounded-md">
