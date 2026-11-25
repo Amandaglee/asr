@@ -8,6 +8,16 @@ const hasSingleInstanceLock = app.requestSingleInstanceLock();
 let pendingKeyResolution;
 let setupWindow;
 
+function resolveApiKeySetup(apiKey) {
+  const resolve = pendingKeyResolution;
+  pendingKeyResolution = undefined;
+  resolve?.(apiKey);
+}
+
+ipcMain.handle('desktop:skip-api-key', (event) => {
+  if (event.sender === setupWindow?.webContents) resolveApiKeySetup(undefined);
+});
+
 if (!hasSingleInstanceLock) {
   app.quit();
 }
@@ -28,15 +38,7 @@ ipcMain.handle('desktop:save-api-key', async (_event, value) => {
     mode: 0o600,
   });
 
-  if (pendingKeyResolution) {
-    const resolve = pendingKeyResolution;
-    pendingKeyResolution = undefined;
-    resolve(apiKey);
-  }
-  if (setupWindow) {
-    setupWindow.close();
-    setupWindow = undefined;
-  }
+  resolveApiKeySetup(apiKey);
 });
 
 function readSavedApiKey() {
@@ -106,7 +108,7 @@ async function waitForServer(url) {
 
 async function openWorkbench() {
   const apiKey = process.env.GEMINI_API_KEY || readSavedApiKey() || (await requestApiKey());
-  process.env.GEMINI_API_KEY = apiKey;
+  if (apiKey) process.env.GEMINI_API_KEY = apiKey;
   process.env.ASR_DESKTOP = 'true';
   process.env.ASR_WEB_ROOT = path.join(app.getAppPath(), 'dist');
   process.env.NODE_ENV = 'production';
@@ -134,8 +136,9 @@ async function openWorkbench() {
       nodeIntegration: false,
     },
   });
-  await workbenchWindow.loadURL(url);
   workbenchWindow.once('ready-to-show', () => workbenchWindow.show());
+  await workbenchWindow.loadURL(url);
+  setupWindow?.close();
 }
 
 app.whenReady()

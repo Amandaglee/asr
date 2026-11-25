@@ -353,6 +353,16 @@ function formatGeminiError(err: unknown): { status: number; message: string } {
 
 export async function startServer(port = PORT): Promise<Server> {
   const app = express();
+  app.post(
+    ['/api/calibrate', '/api/calibrate-start', '/api/vocal-detect', '/api/vocal-detect-start', '/api/demo-sample'],
+    (_req, res, next) => {
+      if (!process.env.GEMINI_API_KEY?.trim() && !process.env.GOOGLE_API_KEY?.trim()) {
+        res.status(403).json({ error: '此功能需要 Gemini API 密钥。请配置密钥后再试。' });
+        return;
+      }
+      next();
+    }
+  );
   app.use(express.json({ limit: '25mb' }));
 
   app.get('/api/health', (_req, res) => {

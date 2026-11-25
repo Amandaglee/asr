@@ -57,29 +57,38 @@
   </head>
   <body>
     <h1>首次使用配置</h1>
-    <p>请输入 Gemini API 密钥。密钥会加密保存在这台电脑上，不会写入安装包。</p>
+    <p>AI 功能需要 Gemini API 密钥。你也可以跳过，直接使用本地导入、编辑和导出功能。</p>
     <form id="form">
       <input id="api-key" type="password" autocomplete="off" placeholder="Gemini API 密钥" required />
       <button id="submit" type="submit">安全保存并启动</button>
+      <button id="skip" type="button">跳过，进入工作台</button>
       <div id="error" role="alert"></div>
     </form>
     <script>
       const form = document.getElementById('form');
       const input = document.getElementById('api-key');
       const submit = document.getElementById('submit');
+      const skip = document.getElementById('skip');
       const error = document.getElementById('error');
 
-      form.addEventListener('submit', async (event) => {
-        event.preventDefault();
+      async function start(action) {
         submit.disabled = true;
+        skip.disabled = true;
         error.textContent = '';
         try {
-          await window.desktopSettings.saveApiKey(input.value);
+          await action();
         } catch (saveError) {
           error.textContent = saveError instanceof Error ? saveError.message : String(saveError);
           submit.disabled = false;
+          skip.disabled = false;
         }
+      }
+
+      form.addEventListener('submit', (event) => {
+        event.preventDefault();
+        void start(() => window.desktopSettings.saveApiKey(input.value));
       });
+      skip.addEventListener('click', () => void start(() => window.desktopSettings.skipApiKey()));
     </script>
   </body>
 </html>
