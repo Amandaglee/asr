@@ -56,13 +56,10 @@ export interface ValidationIssue {
 }
 
 export type VocalSegmentType = '正常_人声段' | '耳语_人声段' | '气声_人声段';
-export type VocalGender = '男声' | '女声';
 
 export interface VocalSegment {
   id: string;
   type: VocalSegmentType;
-  gender?: VocalGender;
-  role?: string;
   start: number;
   end: number;
   spokenCue?: string;
