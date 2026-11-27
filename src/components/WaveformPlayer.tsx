@@ -13,10 +13,12 @@ import {
 } from 'lucide-react';
 import { Utterance } from '../types/asr';
 import { formatSec } from '../utils/diff';
+import { drawSpectrogram } from '../utils/spectrogram';
 
 interface WaveformPlayerProps {
   audioUrl: string;
   audioSize?: number;
+  detailedTrack?: boolean;
   durationSec: number;
   utterances: Utterance[];
   activeUtteranceId: number | null;
@@ -43,6 +45,7 @@ type GainMode = 'auto' | 1 | 2 | 5 | 10;
 export const WaveformPlayer: React.FC<WaveformPlayerProps> = ({
   audioUrl,
   audioSize = 0,
+  detailedTrack = false,
   durationSec,
   utterances,
   activeUtteranceId,
@@ -66,6 +69,7 @@ export const WaveformPlayer: React.FC<WaveformPlayerProps> = ({
   const [zoom, setZoom] = useState<number>(1);
   const [viewStart, setViewStart] = useState<number>(0);
   const [gainMode, setGainMode] = useState<GainMode>('auto');
+  const [showSpectrum, setShowSpectrum] = useState(true);
   const [followPlayhead, setFollowPlayhead] = useState<boolean>(true);
   const [interactionMode, setInteractionMode] = useState<'scrub' | 'range'>('scrub');
   const [hoverTime, setHoverTime] = useState<number | null>(null);
@@ -73,11 +77,13 @@ export const WaveformPlayer: React.FC<WaveformPlayerProps> = ({
   const [canvasWidth, setCanvasWidth] = useState<number>(800);
 
   const channelDataRef = useRef<Float32Array | null>(null);
+  const detailChannelsRef = useRef<Float32Array[]>([]);
   const sampleRateRef = useRef<number>(44100);
   const autoGainRef = useRef<number>(1);
 
   const trackRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const spectrumRef = useRef<HTMLCanvasElement | null>(null);
   const minimapRef = useRef<HTMLDivElement | null>(null);
 
   const [dragMode, setDragMode] = useState<
@@ -89,7 +95,10 @@ export const WaveformPlayer: React.FC<WaveformPlayerProps> = ({
   >(null);
 
   const effectiveDuration = actualDuration > 0 ? actualDuration : Math.max(durationSec, 1);
-  const visibleDuration = Math.max(0.2, effectiveDuration / zoom);
+  const minimumView = detailedTrack ? 0.1 : 0.2;
+  const maxZoom = detailedTrack ? Math.max(64, effectiveDuration / minimumView) : 64;
+  const timeDigits = detailedTrack ? 3 : 2;
+  const visibleDuration = Math.min(effectiveDuration, Math.max(minimumView, effectiveDuration / zoom));
   const maxViewStart = Math.max(0, effectiveDuration - visibleDuration);
   const clampedViewStart = Math.max(0, Math.min(maxViewStart, viewStart));
   const viewEnd = Math.min(effectiveDuration, clampedViewStart + visibleDuration);
@@ -110,6 +119,7 @@ export const WaveformPlayer: React.FC<WaveformPlayerProps> = ({
   useEffect(() => {
     const controller = new AbortController();
     channelDataRef.current = null;
+    detailChannelsRef.current = [];
 
     if (!audioUrl) {
       setDecodeState('idle');
@@ -128,16 +138,20 @@ export const WaveformPlayer: React.FC<WaveformPlayerProps> = ({
           window.AudioContext ||
           (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
         const useLowerSampleRate = audioSize > 35 * 1024 * 1024 || durationSec > 300;
-        const ctx = useLowerSampleRate ? new AudioCtx({ sampleRate: 8000 }) : new AudioCtx();
+        const ctx = useLowerSampleRate
+          ? new AudioCtx({ sampleRate: detailedTrack ? 24000 : 8000 })
+          : new AudioCtx();
         try {
           const decoded = await ctx.decodeAudioData(arrayBuf);
           if (controller.signal.aborted) return;
 
-          const dur = decoded.duration || durationSec;
-          setActualDuration(dur);
-
           // Mix down to mono peak envelope if stereo, or take channel 0 directly
           const ch0 = decoded.getChannelData(0);
+          if (detailedTrack) {
+            detailChannelsRef.current = decoded.numberOfChannels > 1
+              ? [ch0, decoded.getChannelData(1)]
+              : [ch0];
+          }
           let samples = ch0;
           if (decoded.numberOfChannels > 1) {
             const ch1 = decoded.getChannelData(1);
@@ -187,7 +201,7 @@ export const WaveformPlayer: React.FC<WaveformPlayerProps> = ({
     return () => {
       controller.abort();
     };
-  }, [audioUrl, audioSize, durationSec]);
+  }, [audioUrl, audioSize, durationSec, detailedTrack]);
 
   useEffect(() => {
     if (audioRef.current) {
@@ -202,11 +216,11 @@ export const WaveformPlayer: React.FC<WaveformPlayerProps> = ({
 
   // Loop segment enforcement
   useEffect(() => {
-    if (!loopSegment || !activeUtterance || !isPlaying || !audioRef.current) return;
+    if (detailedTrack || !loopSegment || !activeUtterance || !isPlaying || !audioRef.current) return;
     if (currentTime >= activeUtterance.end) {
       audioRef.current.currentTime = activeUtterance.start;
     }
-  }, [currentTime, loopSegment, activeUtterance, isPlaying, audioRef]);
+  }, [currentTime, loopSegment, activeUtterance, isPlaying, audioRef, detailedTrack]);
 
   // Auto-follow playhead while playing when zoomed in
   useEffect(() => {
@@ -234,6 +248,16 @@ export const WaveformPlayer: React.FC<WaveformPlayerProps> = ({
     return () => ro.disconnect();
   }, []);
 
+  const spectrumVisible = detailedTrack && showSpectrum;
+  useEffect(() => {
+    const canvas = spectrumRef.current;
+    if (!spectrumVisible || !canvas || decodeState !== 'ready') return;
+    const timer = window.setTimeout(() => {
+      drawSpectrogram(canvas, detailChannelsRef.current, sampleRateRef.current, clampedViewStart, visibleDuration, canvasWidth);
+    }, 75);
+    return () => window.clearTimeout(timer);
+  }, [spectrumVisible, decodeState, clampedViewStart, visibleDuration, canvasWidth]);
+
   // Draw crisp high-resolution waveform onto <canvas> for [clampedViewStart, viewEnd]
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -243,7 +267,7 @@ export const WaveformPlayer: React.FC<WaveformPlayerProps> = ({
 
     const dpr = window.devicePixelRatio || 1;
     const width = Math.max(100, canvasWidth);
-    const height = 104;
+    const height = detailedTrack ? 176 : 104;
     if (canvas.width !== Math.floor(width * dpr) || canvas.height !== Math.floor(height * dpr)) {
       canvas.width = Math.floor(width * dpr);
       canvas.height = Math.floor(height * dpr);
@@ -253,53 +277,54 @@ export const WaveformPlayer: React.FC<WaveformPlayerProps> = ({
     ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, width, height);
 
-    // Subtle center baseline
-    const midY = height / 2;
-    ctx.strokeStyle = 'rgba(148, 163, 184, 0.35)';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(0, midY);
-    ctx.lineTo(width, midY);
-    ctx.stroke();
-
-    const samples = channelDataRef.current;
+    const channels = detailedTrack ? detailChannelsRef.current : [channelDataRef.current];
+    const laneHeight = height / Math.max(1, channels.length);
     const sr = sampleRateRef.current;
     const gain = gainMode === 'auto' ? autoGainRef.current : gainMode;
-    const progressRatio = Math.max(0, Math.min(1, (currentTime - clampedViewStart) / visibleDuration));
-    const progressX = progressRatio * width;
+    const progressX = ((currentTime - clampedViewStart) / visibleDuration) * width;
 
-    if (samples && samples.length > 0 && decodeState === 'ready') {
-      const startSample = Math.max(0, Math.floor(clampedViewStart * sr));
-      const endSample = Math.min(samples.length, Math.ceil(viewEnd * sr));
-      const totalVisibleSamples = Math.max(1, endSample - startSample);
-      const barStep = 2; // 2px resolution for dense crisp bars
-      const halfMax = midY - 6;
+    for (const [index, samples] of channels.entries()) {
+      const midY = (index + 0.5) * laneHeight;
+      ctx.strokeStyle = 'rgba(148, 163, 184, 0.35)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(0, midY);
+      ctx.lineTo(width, midY);
+      ctx.stroke();
 
-      for (let x = 0; x < width; x += barStep) {
-        const s0 = startSample + Math.floor((x / width) * totalVisibleSamples);
-        const s1 = Math.max(
-          s0 + 1,
-          startSample + Math.floor(((x + barStep) / width) * totalVisibleSamples)
-        );
-        const clampedS1 = Math.min(samples.length, s1);
+      if (samples && samples.length > 0 && decodeState === 'ready') {
+        const barStep = detailedTrack ? 1 : 2;
+        const halfMax = laneHeight / 2 - 6;
 
-        let maxPos = 0;
-        let maxNeg = 0;
-        // Stride cleanly if huge zoom-out block, scan every sample when zoomed in
-        const stride = Math.max(1, Math.floor((clampedS1 - s0) / 160));
-        for (let i = s0; i < clampedS1; i += stride) {
-          const v = samples[i];
-          if (v > maxPos) maxPos = v;
-          if (v < maxNeg) maxNeg = v;
+        for (let x = 0; x < width; x += barStep) {
+          const s0 = Math.floor((clampedViewStart + (x / width) * visibleDuration) * sr);
+          const s1 = Math.max(
+            s0 + 1,
+            Math.ceil((clampedViewStart + ((x + barStep) / width) * visibleDuration) * sr)
+          );
+          const clampedS1 = Math.min(samples.length, s1);
+          if (s0 >= clampedS1) break;
+
+          let maxPos = 0;
+          let maxNeg = 0;
+          // Stride cleanly if huge zoom-out block, scan every sample when zoomed in
+          const stride = Math.max(1, Math.floor((clampedS1 - s0) / 160));
+          for (let i = s0; i < clampedS1; i += stride) {
+            const v = samples[i];
+            if (v > maxPos) maxPos = v;
+            if (v < maxNeg) maxNeg = v;
+          }
+
+          const ampTop = Math.min(1, Math.pow(Math.min(1, maxPos * gain), 0.78));
+          const ampBot = Math.min(1, Math.pow(Math.min(1, Math.abs(maxNeg) * gain), 0.78));
+          const topH = Math.max(1, ampTop * halfMax);
+          const botH = Math.max(1, ampBot * halfMax);
+
+          ctx.fillStyle = detailedTrack
+            ? (x <= progressX ? '#0f766e' : '#14b8a6')
+            : (x <= progressX ? '#2563eb' : '#94a3b8');
+          ctx.fillRect(x, midY - topH, detailedTrack ? 1 : 1.5, topH + botH);
         }
-
-        const ampTop = Math.min(1, Math.pow(Math.min(1, maxPos * gain), 0.78));
-        const ampBot = Math.min(1, Math.pow(Math.min(1, Math.abs(maxNeg) * gain), 0.78));
-        const topH = Math.max(1, ampTop * halfMax);
-        const botH = Math.max(1, ampBot * halfMax);
-
-        ctx.fillStyle = x <= progressX ? '#2563eb' : '#94a3b8';
-        ctx.fillRect(x, midY - topH, 1.5, topH + botH);
       }
     }
 
@@ -308,7 +333,7 @@ export const WaveformPlayer: React.FC<WaveformPlayerProps> = ({
     canvasWidth,
     decodeState,
     clampedViewStart,
-    viewEnd,
+    detailedTrack,
     visibleDuration,
     currentTime,
     gainMode,
@@ -316,15 +341,15 @@ export const WaveformPlayer: React.FC<WaveformPlayerProps> = ({
 
   const applyZoomAtRatio = useCallback(
     (nextZoom: number, anchorRatio = 0.5) => {
-      const clampedZoom = Math.max(1, Math.min(64, Number(nextZoom.toFixed(2))));
+      const clampedZoom = Math.max(1, Math.min(maxZoom, Number(nextZoom.toFixed(2))));
       const anchorTime = clampedViewStart + anchorRatio * visibleDuration;
-      const nextVisDur = Math.max(0.2, effectiveDuration / clampedZoom);
+      const nextVisDur = Math.min(effectiveDuration, Math.max(minimumView, effectiveDuration / clampedZoom));
       const nextMaxStart = Math.max(0, effectiveDuration - nextVisDur);
       const nextStart = Math.max(0, Math.min(nextMaxStart, anchorTime - anchorRatio * nextVisDur));
       setZoom(clampedZoom);
       setViewStart(nextStart);
     },
-    [clampedViewStart, visibleDuration, effectiveDuration]
+    [clampedViewStart, visibleDuration, effectiveDuration, maxZoom, minimumView]
   );
 
   // Wheel zoom & pan directly over the waveform
@@ -356,10 +381,10 @@ export const WaveformPlayer: React.FC<WaveformPlayerProps> = ({
       const el = trackRef.current;
       if (!el) return currentTime;
       const rect = el.getBoundingClientRect();
-      const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-      return Number((clampedViewStart + ratio * visibleDuration).toFixed(2));
+      const ratio = Math.max(0, Math.min(1, (clientX - rect.left - el.clientLeft) / el.clientWidth));
+      return Number(Math.min(effectiveDuration, clampedViewStart + ratio * visibleDuration).toFixed(timeDigits));
     },
-    [clampedViewStart, visibleDuration, currentTime]
+    [clampedViewStart, visibleDuration, currentTime, effectiveDuration, timeDigits]
   );
 
   useEffect(() => {
@@ -382,10 +407,10 @@ export const WaveformPlayer: React.FC<WaveformPlayerProps> = ({
         if (!targetU) return;
         const t = Math.max(0, Math.min(effectiveDuration, timeFromClientX(e.clientX)));
         if (dragMode.edge === 'start') {
-          const safeStart = Math.min(t, Number((targetU.end - 0.05).toFixed(2)));
+          const safeStart = Math.min(t, Number((targetU.end - 0.05).toFixed(timeDigits)));
           onUpdateUtteranceBounds(targetU.utterance_id, Math.max(0, safeStart), targetU.end);
         } else {
-          const safeEnd = Math.max(t, Number((targetU.start + 0.05).toFixed(2)));
+          const safeEnd = Math.max(t, Number((targetU.start + 0.05).toFixed(timeDigits)));
           onUpdateUtteranceBounds(
             targetU.utterance_id,
             targetU.start,
@@ -396,8 +421,8 @@ export const WaveformPlayer: React.FC<WaveformPlayerProps> = ({
     };
     const handleUp = () => {
       if (dragMode.kind === 'range' && onCreateSegmentRange) {
-        const s = Number(Math.min(dragMode.anchorTime, dragMode.currentEdgeTime).toFixed(2));
-        const e = Number(Math.max(dragMode.anchorTime, dragMode.currentEdgeTime).toFixed(2));
+        const s = Number(Math.min(dragMode.anchorTime, dragMode.currentEdgeTime).toFixed(timeDigits));
+        const e = Number(Math.max(dragMode.anchorTime, dragMode.currentEdgeTime).toFixed(timeDigits));
         if (e - s >= 0.05) {
           onCreateSegmentRange(s, e);
         } else {
@@ -421,13 +446,14 @@ export const WaveformPlayer: React.FC<WaveformPlayerProps> = ({
     utterances,
     onUpdateUtteranceBounds,
     onCreateSegmentRange,
+    timeDigits,
   ]);
 
   const focusActiveSegment = () => {
     if (!activeUtterance) return;
     const segLen = Math.max(0.4, activeUtterance.end - activeUtterance.start);
     const desiredVis = Math.max(0.6, segLen * 1.6);
-    const nextZoom = Math.max(1, Math.min(64, Number((effectiveDuration / desiredVis).toFixed(2))));
+    const nextZoom = Math.max(1, Math.min(maxZoom, Number((effectiveDuration / desiredVis).toFixed(2))));
     const actualVis = effectiveDuration / nextZoom;
     const nextStart = Math.max(
       0,
@@ -443,7 +469,7 @@ export const WaveformPlayer: React.FC<WaveformPlayerProps> = ({
   // Compute adaptive ruler ticks for [clampedViewStart, viewEnd]
   const rulerTicks = useMemo(() => {
     const rawStep = visibleDuration / 8;
-    const niceSteps = [0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120];
+    const niceSteps = [0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120];
     const step = niceSteps.find((s) => s >= rawStep) ?? 120;
     const firstTick = Math.ceil(clampedViewStart / step) * step;
     const ticks: Array<{ time: number; leftPct: number }> = [];
@@ -519,7 +545,7 @@ export const WaveformPlayer: React.FC<WaveformPlayerProps> = ({
           <button
             type="button"
             onClick={() => applyZoomAtRatio(zoom * 2, 0.5)}
-            disabled={zoom >= 64}
+            disabled={zoom >= maxZoom}
             title="放大波形（也可用鼠标滚轮直接缩放）"
             className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded disabled:opacity-40 cursor-pointer whitespace-nowrap shrink-0"
           >
@@ -605,6 +631,17 @@ export const WaveformPlayer: React.FC<WaveformPlayerProps> = ({
         </div>
       </div>
 
+      {detailedTrack && (
+        <button
+          type="button"
+          aria-pressed={showSpectrum}
+          onClick={() => setShowSpectrum((visible) => !visible)}
+          className={`self-start rounded px-2 py-1 text-xs font-medium ${showSpectrum ? 'bg-teal-100 text-teal-800' : 'bg-slate-100 text-slate-700'}`}
+        >
+          频谱图
+        </button>
+      )}
+
       {/* Time Ruler */}
       <div className="relative h-4 w-full select-none text-[10px] font-mono tabular-nums text-slate-400 border-b border-slate-100">
         {rulerTicks.map((tk) => (
@@ -648,10 +685,34 @@ export const WaveformPlayer: React.FC<WaveformPlayerProps> = ({
           setHoverX(null);
           setHoverTime(null);
         }}
-        className="relative h-[104px] w-full bg-slate-50 border border-slate-200 rounded-md overflow-hidden cursor-crosshair select-none"
+        className="relative w-full bg-slate-50 border border-slate-200 rounded-md overflow-hidden cursor-crosshair select-none"
       >
         {/* High-res Waveform Canvas */}
-        <canvas ref={canvasRef} className="w-full h-full block pointer-events-none" />
+        <canvas ref={canvasRef} className={`w-full ${detailedTrack ? 'h-[176px]' : 'h-[104px]'} block pointer-events-none`} />
+        {spectrumVisible && (
+          <div className="relative h-[248px] border-t border-slate-600 bg-slate-950 pointer-events-none">
+            {decodeState === 'ready' && (
+              <>
+                <canvas ref={spectrumRef} className="block h-full w-full" role="img" aria-label="声音频谱图，亮色表示能量较强" />
+                <div className="absolute inset-0 flex flex-col text-[10px] text-white">
+                  {detailChannelsRef.current.map((_, index, channels) => (
+                    <div key={index} className="relative flex-1 border-b border-white/30 last:border-0">
+                      <span className="absolute right-1 top-0.5 rounded bg-slate-950/80 px-1">
+                        {channels.length === 2 ? (index === 0 ? '左声道 ' : '右声道 ') : ''}
+                        {Math.min(12, sampleRateRef.current / 2000).toFixed(1)} kHz
+                      </span>
+                      <span className="absolute right-1 bottom-0.5 rounded bg-slate-950/80 px-1">0 Hz</span>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+        {detailedTrack && rulerTicks.map((tick) => (
+          <div key={tick.time} className="pointer-events-none absolute inset-y-0 w-px bg-slate-200/70" style={{ left: `${tick.leftPct}%` }} />
+        ))}
 
         {/* Utterance / Vocal Segment Overlays */}
         {utterances.map((u) => {
@@ -731,7 +792,7 @@ export const WaveformPlayer: React.FC<WaveformPlayerProps> = ({
             className="absolute top-0 bottom-0 w-px bg-slate-400/70 pointer-events-none z-20"
           >
             <span className="absolute bottom-1 left-1 px-1 py-0.5 text-[10px] font-mono tabular-nums bg-slate-900/80 text-white rounded whitespace-nowrap">
-              {hoverTime.toFixed(2)}s
+              {hoverTime.toFixed(timeDigits)}s
             </span>
           </div>
         )}
@@ -748,7 +809,7 @@ export const WaveformPlayer: React.FC<WaveformPlayerProps> = ({
               className="absolute top-0 bottom-0 bg-blue-600/20 border-x-2 border-blue-600 z-30 pointer-events-none"
             >
               <span className="absolute top-1 right-1 px-1.5 py-0.5 text-[10px] font-mono tabular-nums bg-blue-700 text-white rounded whitespace-nowrap">
-                {s.toFixed(2)}s - {e.toFixed(2)}s ({(e - s).toFixed(2)}s)
+                {s.toFixed(timeDigits)}s - {e.toFixed(timeDigits)}s ({(e - s).toFixed(timeDigits)}s)
               </span>
             </div>
           );
@@ -793,7 +854,7 @@ export const WaveformPlayer: React.FC<WaveformPlayerProps> = ({
           <div
             style={{
               left: `${(clampedViewStart / effectiveDuration) * 100}%`,
-              width: `${Math.max(2, (visibleDuration / effectiveDuration) * 100)}%`,
+              width: `${Math.max(detailedTrack ? 0 : 2, (visibleDuration / effectiveDuration) * 100)}%`,
             }}
             className="absolute top-0 bottom-0 bg-blue-600/20 border border-blue-600 rounded-xs"
           />

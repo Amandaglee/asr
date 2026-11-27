@@ -1229,12 +1229,12 @@ export default function App() {
       v.includes(',') || v.includes('"') || v.includes('\n')
         ? `"${v.replace(/"/g, '""')}"`
         : v;
-    const header = ['QueryID', '时长（s）', '正常_人声段', '耳语_人声段', '气声_人声段'];
+    const header = ['QueryID', '时长（s）', '正常_人声段', '耳语_人声段', '气声_人声段', '性别', '角色'];
     const lines = [
       header.map(esc).join(','),
       ...vocalItems.map((it) => {
         const f = computeVocalRowFields(it, '-');
-        return [f.queryId, f.diffDuration, f.normalRange, f.whisperRange, f.breathyRange]
+        return [f.queryId, f.diffDuration, f.normalRange, f.whisperRange, f.breathyRange, f.gender, f.role]
           .map(esc)
           .join(',');
       }),
