@@ -16,7 +16,7 @@ import {
   Trash2,
   Upload,
 } from 'lucide-react';
-import { Utterance, VocalAudioItem, VocalSegment, VocalSegmentType } from '../types/asr';
+import { Utterance, VocalAudioItem, VocalGender, VocalSegment, VocalSegmentType } from '../types/asr';
 import { WaveformPlayer } from './WaveformPlayer';
 import { detectAudioSpeechBounds, extractAudioFilesForVocalImport } from '../utils/batchImport';
 import { formatSec } from '../utils/diff';
@@ -33,6 +33,7 @@ interface VocalSegmentWorkbenchProps {
 }
 
 const VOCAL_TYPES: VocalSegmentType[] = ['正常_人声段', '耳语_人声段', '气声_人声段'];
+const VOCAL_GENDERS = ['', '男声', '女声'] as const;
 
 export function computeVocalRowFields(
   item: VocalAudioItem,
@@ -43,6 +44,8 @@ export function computeVocalRowFields(
   normalRange: string;
   whisperRange: string;
   breathyRange: string;
+  gender: string;
+  role: string;
 } {
   const sorted = [...item.segments].sort((a, b) => a.start - b.start);
   const totalDiff = sorted.reduce((acc, s) => acc + Math.max(0, s.end - s.start), 0);
@@ -53,12 +56,22 @@ export function computeVocalRowFields(
       .map((s) => `${s.start.toFixed(2)}${rangeSeparator}${s.end.toFixed(2)}`)
       .join('; ');
 
+  const formatLabels = (field: 'gender' | 'role') => {
+    const labels = sorted.map((segment) => segment[field]?.replace(/\s+/g, ' ').trim() ?? '');
+    if (new Set(labels).size <= 1) return labels[0] ?? '';
+    return sorted
+      .map((s, index) => `${s.start.toFixed(2)}${rangeSeparator}${s.end.toFixed(2)} ${labels[index] || '未标注'}`)
+      .join('; ');
+  };
+
   return {
     queryId: item.queryId,
     diffDuration: sorted.length > 0 ? totalDiff.toFixed(2) : '0.00',
     normalRange: formatTypeCol('正常_人声段'),
     whisperRange: formatTypeCol('耳语_人声段'),
     breathyRange: formatTypeCol('气声_人声段'),
+    gender: formatLabels('gender'),
+    role: formatLabels('role'),
   };
 }
 
@@ -98,6 +111,8 @@ export const VocalSegmentWorkbench: React.FC<VocalSegmentWorkbenchProps> = ({
 
   // Manual listening & quick marking state (100% local, no AI needed)
   const [activeMarkType, setActiveMarkType] = useState<VocalSegmentType>('正常_人声段');
+  const [markGender, setMarkGender] = useState<VocalGender | ''>('');
+  const [markRole, setMarkRole] = useState('');
   const [pendingMarkStart, setPendingMarkStart] = useState<number | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -111,6 +126,9 @@ export const VocalSegmentWorkbench: React.FC<VocalSegmentWorkbenchProps> = ({
   // Clear pending start mark and auto-sync detected vocal type when switching audio
   useEffect(() => {
     setPendingMarkStart(null);
+    setMarkGender('');
+    setMarkRole('');
+    setPlayingWindowEnd(null);
     if (activeItem?.detectedTypeFromName) {
       setActiveMarkType(activeItem.detectedTypeFromName);
     }
@@ -125,7 +143,7 @@ export const VocalSegmentWorkbench: React.FC<VocalSegmentWorkbenchProps> = ({
       role: seg.type === '正常_人声段' ? 'user' : 'assistant',
       start: seg.start,
       end: seg.end,
-      text: `${seg.type}${seg.spokenCue ? `: ${seg.spokenCue}` : ''}`,
+      text: [seg.type, seg.gender, seg.role, seg.spokenCue].filter(Boolean).join(' · '),
     }));
   }, [activeItem]);
 
@@ -135,23 +153,48 @@ export const VocalSegmentWorkbench: React.FC<VocalSegmentWorkbenchProps> = ({
     return idx >= 0 ? idx + 1 : null;
   }, [activeItem, activeSegmentId]);
 
-  // Stop playback automatically at segment end when auditioning a specific segment (unless looping)
+  const loopTarget = loopSegment ? waveformUtterances.find((u) => u.utterance_id === activeUtteranceId) : undefined;
+  const previewEnd = loopTarget?.end ?? playingWindowEnd;
+  const loopStart = loopTarget?.start;
+
   useEffect(() => {
-    if (playingWindowEnd === null || loopSegment || !isPlaying || !audioRef.current) return;
-    if (currentTime >= playingWindowEnd) {
-      audioRef.current.pause();
-      setPlayingWindowEnd(null);
-    }
-  }, [currentTime, playingWindowEnd, loopSegment, isPlaying]);
+    const audio = audioRef.current;
+    if (previewEnd === null || !isPlaying || !audio) return;
+    let frame = 0;
+    const checkBoundary = () => {
+      if (audio.paused || audio.seeking || audio.currentTime < previewEnd) return;
+      if (loopStart !== undefined) {
+        audio.currentTime = loopStart;
+        setCurrentTime(loopStart);
+      } else {
+        audio.pause();
+        audio.currentTime = previewEnd;
+        setCurrentTime(previewEnd);
+        setPlayingWindowEnd(null);
+      }
+    };
+    const trackBoundary = () => {
+      checkBoundary();
+      if (!audio.paused) frame = requestAnimationFrame(trackBoundary);
+    };
+    frame = requestAnimationFrame(trackBoundary);
+    audio.addEventListener('timeupdate', checkBoundary);
+    return () => {
+      cancelAnimationFrame(frame);
+      audio.removeEventListener('timeupdate', checkBoundary);
+    };
+  }, [previewEnd, loopStart, isPlaying, activeItem?.id]);
 
   const createSegmentWithBounds = useCallback(
     (startVal: number, endVal: number, typeOverride?: VocalSegmentType) => {
       if (!activeItem) return;
-      const s = Number(Math.min(startVal, endVal).toFixed(2));
-      const e = Number(Math.max(startVal, endVal).toFixed(2));
+      const s = Number(Math.min(startVal, endVal).toFixed(3));
+      const e = Number(Math.max(startVal, endVal).toFixed(3));
       const newSeg: VocalSegment = {
         id: `seg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
         type: typeOverride ?? activeMarkType,
+        gender: markGender || undefined,
+        role: markRole.trim() || undefined,
         start: Math.max(0, s),
         end: Math.max(s + 0.05, e),
       };
@@ -161,17 +204,17 @@ export const VocalSegmentWorkbench: React.FC<VocalSegmentWorkbenchProps> = ({
       }));
       setActiveSegmentId(newSeg.id);
     },
-    [activeItem, activeMarkType, onUpdateItem]
+    [activeItem, activeMarkType, markGender, markRole, onUpdateItem]
   );
 
   const handleMarkStartNow = useCallback(() => {
     if (!activeItem) return;
-    setPendingMarkStart(Number(currentTime.toFixed(2)));
+    setPendingMarkStart(Number(currentTime.toFixed(3)));
   }, [activeItem, currentTime]);
 
   const handleMarkEndNow = useCallback(() => {
     if (!activeItem) return;
-    const nowT = Number(currentTime.toFixed(2));
+    const nowT = Number(currentTime.toFixed(3));
     if (pendingMarkStart !== null) {
       createSegmentWithBounds(pendingMarkStart, nowT, activeMarkType);
       setPendingMarkStart(null);
@@ -183,7 +226,7 @@ export const VocalSegmentWorkbench: React.FC<VocalSegmentWorkbenchProps> = ({
         ...prev,
         segments: prev.segments.map((s) =>
           s.id === activeSegmentId
-            ? { ...s, end: Math.max(Number((s.start + 0.05).toFixed(2)), nowT) }
+            ? { ...s, end: Math.max(Number((s.start + 0.05).toFixed(3)), nowT) }
             : s
         ),
       }));
@@ -219,6 +262,9 @@ export const VocalSegmentWorkbench: React.FC<VocalSegmentWorkbenchProps> = ({
         setActiveMarkType('耳语_人声段');
       } else if (e.key === '3') {
         setActiveMarkType('气声_人声段');
+      } else if (!e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && (e.key === '4' || e.key === '5' || e.key === '6')) {
+        e.preventDefault();
+        setMarkGender(e.key === '4' ? '男声' : e.key === '5' ? '女声' : '');
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -282,6 +328,8 @@ export const VocalSegmentWorkbench: React.FC<VocalSegmentWorkbenchProps> = ({
     const newSeg: VocalSegment = {
       id: `seg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       type,
+      gender: markGender || undefined,
+      role: markRole.trim() || undefined,
       start: Math.max(0, start),
       end: Math.min(maxDur, end) > start ? Math.min(maxDur, end) : Number((start + 0.5).toFixed(2)),
     };
@@ -367,10 +415,10 @@ export const VocalSegmentWorkbench: React.FC<VocalSegmentWorkbenchProps> = ({
   }, [items, tableFilter, searchQuery]);
 
   const buildDelimitedTable = (delimiter: '\t' | ',') => {
-    const header = ['QueryID', '时长（s）', '正常_人声段', '耳语_人声段', '气声_人声段'];
+    const header = ['QueryID', '时长（s）', '正常_人声段', '耳语_人声段', '气声_人声段', '性别', '角色'];
     const rows = items.map((it) => {
       const f = computeVocalRowFields(it, rangeSeparator);
-      const cols = [f.queryId, f.diffDuration, f.normalRange, f.whisperRange, f.breathyRange];
+      const cols = [f.queryId, f.diffDuration, f.normalRange, f.whisperRange, f.breathyRange, f.gender, f.role];
       return delimiter === ',' ? cols.map(escapeCsvCell).join(',') : cols.join('\t');
     });
     const headLine = delimiter === ',' ? header.map(escapeCsvCell).join(',') : header.join('\t');
@@ -690,6 +738,7 @@ export const VocalSegmentWorkbench: React.FC<VocalSegmentWorkbenchProps> = ({
 
                 {/* Waveform Scrubbing Player */}
                 <WaveformPlayer
+                  detailedTrack
                   audioUrl={activeItem.audioUrl}
                   audioSize={activeItem.audioSize}
                   durationSec={activeItem.durationSec || 1}
@@ -739,6 +788,29 @@ export const VocalSegmentWorkbench: React.FC<VocalSegmentWorkbenchProps> = ({
                       ))}
                     </div>
 
+                    <div role="group" aria-label="新建段的男女声标注" className="flex items-center gap-1 rounded-md bg-slate-100 p-0.5">
+                      {VOCAL_GENDERS.map((gender) => (
+                        <button
+                          key={gender}
+                          type="button"
+                          aria-pressed={markGender === gender}
+                          onClick={() => setMarkGender(gender)}
+                          className={`rounded px-2.5 py-1 text-xs font-medium ${markGender === gender ? 'bg-white text-blue-700 shadow-xs' : 'text-slate-600 hover:text-slate-900'}`}
+                        >
+                          {gender || '未标注'}
+                        </button>
+                      ))}
+                    </div>
+                    <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700">
+                      角色
+                      <input
+                        type="text"
+                        value={markRole}
+                        onChange={(e) => setMarkRole(e.target.value)}
+                        placeholder="例如：角色 A"
+                        className="w-28 rounded border border-slate-200 px-2 py-1"
+                      />
+                    </label>
                     <button
                       type="button"
                       onClick={handleMarkStartNow}
@@ -750,7 +822,7 @@ export const VocalSegmentWorkbench: React.FC<VocalSegmentWorkbenchProps> = ({
                     >
                       <span>
                         {pendingMarkStart !== null
-                          ? `已记起点 ${pendingMarkStart.toFixed(2)}s（重记 I）`
+                          ? `已记起点 ${pendingMarkStart.toFixed(3)}s（重记 I）`
                           : '记起点 (I)'}
                       </span>
                     </button>
@@ -780,7 +852,7 @@ export const VocalSegmentWorkbench: React.FC<VocalSegmentWorkbenchProps> = ({
                   </div>
 
                   <span className="text-[11px] text-slate-400 font-mono whitespace-nowrap">
-                    空格 播放/暂停 · 1/2/3 选类型 · Shift+拖拽 框选波形
+                    空格 播放/暂停 · 1/2/3 选类型 · 4 男声 · 5 女声 · 6 未标注 · Shift+拖拽 框选波形
                   </span>
                 </div>
 
@@ -853,7 +925,7 @@ export const VocalSegmentWorkbench: React.FC<VocalSegmentWorkbenchProps> = ({
                                         e.stopPropagation();
                                         handlePlaySegment(seg);
                                       }}
-                                      title={`试听第 ${idx + 1} 段 (${seg.start.toFixed(2)}s - ${seg.end.toFixed(2)}s)`}
+                                      title={`试听第 ${idx + 1} 段 (${seg.start.toFixed(3)}s - ${seg.end.toFixed(3)}s)`}
                                       className={`w-7 h-7 inline-flex items-center justify-center rounded-md border transition-colors cursor-pointer shrink-0 ${
                                         isSelected && isPlaying
                                           ? 'bg-blue-700 border-blue-700 text-white'
@@ -885,13 +957,35 @@ export const VocalSegmentWorkbench: React.FC<VocalSegmentWorkbenchProps> = ({
                                       </option>
                                     ))}
                                   </select>
+                                  <select
+                                    aria-label={`第 ${idx + 1} 段男女声标注`}
+                                    value={seg.gender ?? ''}
+                                    onClick={(e) => e.stopPropagation()}
+                                    onChange={(e) =>
+                                      handleUpdateSegment(seg.id, { gender: (e.target.value || undefined) as VocalGender | undefined })
+                                    }
+                                    className="ml-2 rounded border border-slate-200 bg-white px-2 py-1 text-xs text-slate-700"
+                                  >
+                                    {VOCAL_GENDERS.map((gender) => (
+                                      <option key={gender} value={gender}>{gender || '未标注'}</option>
+                                    ))}
+                                  </select>
+                                  <input
+                                    type="text"
+                                    aria-label={`第 ${idx + 1} 段角色`}
+                                    placeholder="角色"
+                                    value={seg.role ?? ''}
+                                    onClick={(e) => e.stopPropagation()}
+                                    onChange={(e) => handleUpdateSegment(seg.id, { role: e.target.value || undefined })}
+                                    className="ml-2 w-24 rounded border border-slate-200 px-2 py-1 text-xs text-slate-700"
+                                  />
                                 </td>
 
                                 <td className="py-2.5 px-3 whitespace-nowrap">
                                   <div className="flex items-center gap-1.5">
                                     <input
                                       type="number"
-                                      step="0.01"
+                                      step="0.001"
                                       min="0"
                                       max={activeItem.durationSec > 0 ? activeItem.durationSec : undefined}
                                       value={seg.start}
@@ -900,7 +994,7 @@ export const VocalSegmentWorkbench: React.FC<VocalSegmentWorkbenchProps> = ({
                                         const val = Number(e.target.value);
                                         if (Number.isFinite(val)) {
                                           handleUpdateSegment(seg.id, {
-                                            start: Math.max(0, Number(val.toFixed(2))),
+                                            start: Math.max(0, Number(val.toFixed(3))),
                                           });
                                         }
                                       }}
@@ -911,7 +1005,7 @@ export const VocalSegmentWorkbench: React.FC<VocalSegmentWorkbenchProps> = ({
                                       onClick={(e) => {
                                         e.stopPropagation();
                                         handleUpdateSegment(seg.id, {
-                                          start: Number(currentTime.toFixed(2)),
+                                          start: Number(currentTime.toFixed(3)),
                                         });
                                       }}
                                       title="将当前播放头时间设为开始时间"
@@ -926,7 +1020,7 @@ export const VocalSegmentWorkbench: React.FC<VocalSegmentWorkbenchProps> = ({
                                   <div className="flex items-center gap-1.5">
                                     <input
                                       type="number"
-                                      step="0.01"
+                                      step="0.001"
                                       min="0"
                                       max={activeItem.durationSec > 0 ? activeItem.durationSec : undefined}
                                       value={seg.end}
@@ -935,7 +1029,7 @@ export const VocalSegmentWorkbench: React.FC<VocalSegmentWorkbenchProps> = ({
                                         const val = Number(e.target.value);
                                         if (Number.isFinite(val)) {
                                           handleUpdateSegment(seg.id, {
-                                            end: Math.max(0, Number(val.toFixed(2))),
+                                            end: Math.max(0, Number(val.toFixed(3))),
                                           });
                                         }
                                       }}
@@ -946,7 +1040,7 @@ export const VocalSegmentWorkbench: React.FC<VocalSegmentWorkbenchProps> = ({
                                       onClick={(e) => {
                                         e.stopPropagation();
                                         handleUpdateSegment(seg.id, {
-                                          end: Number(currentTime.toFixed(2)),
+                                          end: Number(currentTime.toFixed(3)),
                                         });
                                       }}
                                       title="将当前播放头时间设为截止时间"
@@ -1126,6 +1220,8 @@ export const VocalSegmentWorkbench: React.FC<VocalSegmentWorkbenchProps> = ({
                       <th className="py-2.5 px-3">正常_人声段</th>
                       <th className="py-2.5 px-3">耳语_人声段</th>
                       <th className="py-2.5 px-3">气声_人声段</th>
+                      <th className="py-2.5 px-3">性别</th>
+                      <th className="py-2.5 px-3">角色</th>
                       <th className="py-2.5 pl-3 pr-4 text-right font-medium text-slate-500">
                         确认状态
                       </th>
@@ -1134,7 +1230,7 @@ export const VocalSegmentWorkbench: React.FC<VocalSegmentWorkbenchProps> = ({
                   <tbody className="divide-y divide-slate-100 text-xs">
                     {filteredTableItems.length === 0 ? (
                       <tr>
-                        <td colSpan={6} className="py-8 text-center text-slate-500">
+                        <td colSpan={8} className="py-8 text-center text-slate-500">
                           没有符合筛选条件的记录。
                         </td>
                       </tr>
@@ -1168,6 +1264,12 @@ export const VocalSegmentWorkbench: React.FC<VocalSegmentWorkbenchProps> = ({
                             </td>
                             <td className="py-2.5 px-3 font-mono tabular-nums text-slate-700 whitespace-nowrap">
                               {row.breathyRange || <span className="text-slate-300">—</span>}
+                            </td>
+                            <td className="py-2.5 px-3 text-slate-700">
+                              {row.gender || <span className="text-slate-300">—</span>}
+                            </td>
+                            <td className="py-2.5 px-3 text-slate-700">
+                              {row.role || <span className="text-slate-300">—</span>}
                             </td>
                             <td className="py-2.5 pl-3 pr-4 text-right whitespace-nowrap">
                               {it.confirmed ? (
